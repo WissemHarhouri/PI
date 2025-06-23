@@ -332,8 +332,6 @@ if user_query:
                 pipeline_details_md += f"**2. Vectorisation Requête:** {'Succès' if query_embedding else 'Échec'}\n\n"
 
                 if query_embedding:
-                    # 3. Récupération des Chunks
-                    # Make top_k and threshold configurable if desired
                     top_k_retrieval = 3
                     similarity_threshold_val = 0.3  # Lowered from 0.7 for better recall
                     retrieved_chunks = retrieve_top_k_chunks_from_memory(
