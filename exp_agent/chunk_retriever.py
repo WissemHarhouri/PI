@@ -1,4 +1,3 @@
-# exp_agent/retriever.py
 import numpy as np
 import faiss # Ensure faiss is imported
 from typing import List, Dict, Optional
@@ -45,8 +44,7 @@ def retrieve_top_k_chunks_from_memory(
             if faiss_id == -1: # FAISS can return -1 if fewer than k results are found
                 continue
 
-            # Apply similarity threshold
-            # For normalized vectors and IndexFlatIP, score is cosine similarity.
+            
             if score >= similarity_threshold:
                 if 0 <= faiss_id < len(chunk_store_in_memory):
                     # Important: Retrieve metadata based on the actual index in chunk_store_in_memory

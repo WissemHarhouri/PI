@@ -1,0 +1,56 @@
+[tool.poetry]
+name = "rag"
+version = "0.1.0"
+description = ""
+authors = ["wharhouri <wharhouri@jems-group.com>"]
+readme = "README.md"
+packages = [{ include = "rag" }]
+license = "MIT"
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+streamlit = ">=1.46.0,<2.0.0"
+faiss-cpu = ">=1.11.0,<2.0.0"
+langdetect = ">=1.0.9,<2.0.0"
+pypdf2 = ">=3.0.1,<4.0.0"
+loguru = ">=0.7.3,<0.8.0"
+python-docx = ">=1.2.0,<2.0.0"
+beautifulsoup4 = ">=4.13.4,<5.0.0"
+easyocr = ">=1.7.2,<2.0.0"
+guardrails-ai = ">=0.6.2,<0.7.0"
+contextcheck-guard = {version = "^0.2.3", source = "contextcheck-guard"}
+unusual-prompt-guard = "0.7.14"
+conli-guard = "0.9.22"
+cove-guard = "0.10.7"
+detectpii-guard = {version = "^0.2.5", source = "detectpii-guard"}
+pyjwt = "^2.10.1"
+
+[[tool.poetry.source]]
+name = "detectpii-guard"
+url = "https://gitlab.jems-group.com/api/v4/projects/1443/packages/pypi/simple"
+
+
+[[tool.poetry.source]]
+name = 'cove_guard'
+url = 'https://gitlab.jems-group.com/api/v4/projects/1425/packages/pypi/simple'
+
+
+[[tool.poetry.source]]
+name = 'conli_guard'
+url = 'https://gitlab.jems-group.com/api/v4/projects/1418/packages/pypi/simple'
+
+
+[[tool.poetry.source]]
+name = "contextcheck-guard"
+url = "https://gitlab.jems-group.com/api/v4/projects/1444/packages/pypi/simple"
+
+
+[[tool.poetry.source]]
+name = 'unusual_prompt_guard'
+url = 'https://gitlab.jems-group.com/api/v4/projects/1440/packages/pypi/simple'
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+

@@ -1,4 +1,3 @@
-# exp_agent/generator.py
 import os
 from openai import OpenAI, APIError, AuthenticationError, RateLimitError
 from typing import List, Dict
@@ -10,8 +9,7 @@ DEFAULT_TEMPERATURE = 0.2
 # --- Prompt Construction (from your generator.py, slightly adapted) ---
 def build_augmented_prompt(query: str, chunks: List[Dict]) -> str:
     if not chunks:
-        # Fallback prompt if no relevant chunks are found
-        # This aligns with how the Streamlit app handles no context
+
         prompt = f"""### QUESTION UTILISATEUR :
 {query}
 
@@ -25,11 +23,6 @@ Réponse :
     context_parts = []
     for chunk in chunks:
         source_info = chunk.get('doc_name', chunk.get('source', 'Source inconnue')) # Prefer doc_name if available
-        # You might want to include page or paragraph from chunk['metadata'] if available
-        # meta = chunk.get('metadata', {})
-        # page_info = f", Page {meta.get('page')}" if 'page' in meta else ""
-        # paragraph_info = f", Paragraphe {meta.get('paragraph')}" if 'paragraph' in meta else ""
-        # context_parts.append(f"[Source: {source_info}{page_info}{paragraph_info}] {chunk['text']}")
         context_parts.append(f"[Source: {source_info}] {chunk['text']}")
 
     context = "\n\n---\n\n".join(context_parts) # Aligning with Streamlit app separator
@@ -53,15 +46,12 @@ def generate_llm_response(
     openai_api_key: str,
     llm_model: str = DEFAULT_LLM_MODEL,
     temperature: float = DEFAULT_TEMPERATURE,
-    # Conceptual guardrail flags can be passed here if needed for pre/post LLM checks
-    # guardrails_enabled: Dict = None 
+
 ) -> str:
     if not openai_api_key:
         print("Generator: OpenAI API Key not provided.")
         return "Erreur: Clé API OpenAI non configurée."
 
-    # Conceptual Guardrail Integration (Input - if any were to be applied to the prompt itself)
-    # e.g., if guardrails_enabled and guardrails_enabled.get("unusual_prompt_on_final_prompt"): ...
 
     try:
         client = OpenAI(api_key=openai_api_key)
@@ -79,9 +69,6 @@ def generate_llm_response(
         )
         llm_response_content = response.choices[0].message.content.strip()
 
-        # Conceptual Guardrail Integration (Output - if any were to be applied to the raw LLM response)
-        # e.g., if guardrails_enabled and guardrails_enabled.get("detectpii_on_response"): ...
-        
         return llm_response_content
     except AuthenticationError:
         print("Generator: OpenAI API Key is invalid or not authorized.")

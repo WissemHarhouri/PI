@@ -1,4 +1,3 @@
-# exp_agent/vect.py
 import os
 import logging
 import tiktoken # Assuming tiktoken is used as in your original vect.py
@@ -11,9 +10,7 @@ MAX_TOKENS_FOR_EMBEDDING = 8191 # OpenAI's limit for text-embedding-ada-002 and 
 
 # --- Token Counting and Truncation (from your original vect.py) ---
 def count_tokens(text: str, model_name_for_tiktoken: str = "gpt-3.5-turbo") -> int:
-    # Note: tiktoken model name might differ from embedding model name
-    # For text-embedding-ada-002 and text-embedding-3-small, "cl100k_base" is the encoding.
-    # "gpt-3.5-turbo" often uses this, so it's a safe bet if embedding model specific name is not known for tiktoken.
+   
     try:
         enc = tiktoken.encoding_for_model(model_name_for_tiktoken) 
     except KeyError:

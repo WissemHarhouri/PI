@@ -96,7 +96,6 @@ with st.sidebar:
     for guard_key, guard_label in {
         "conli": "conli-guard (cohérence LLM/connaissances)",
         "cove": "cove-guard (justification logique)",
-        "contextcheck": "contextcheck-guard (contexte conversationnel)",
         "detectpii": "detectpii-guard (détection PII)",
         "unusual_prompt": "unusual-prompt-guard (requêtes suspectes)"
     }.items():
@@ -258,7 +257,7 @@ if st.button("✨ Traiter et Indexer le Document"):
         st.warning("Veuillez fournir un document (fichier, texte, URL ou image) à traiter.")
 
 # Display Indexed Chunks Overview
-st.subheader("📊 Aperçu de l'Index")
+st.subheader(" Aperçu de l'Index")
 if st.session_state.faiss_index and st.session_state.faiss_index.ntotal > 0:
     st.info(f"**{st.session_state.faiss_index.ntotal}** chunks indexés (Dimension: {st.session_state.faiss_index_dim}). "
             f"Métadonnées pour **{len(st.session_state.chunk_store)}** chunks.")
@@ -295,6 +294,15 @@ for i, (sender_type, message_content) in enumerate(st.session_state.chat_history
             # Optionally, display sources or pipeline details related to this assistant message
             # This would require storing more context with each assistant message in chat_history
 
+
+
+
+
+
+
+
+
+
 # User Input
 user_query = st.chat_input("Posez votre question à l'assistant RAG...")
 
@@ -308,72 +316,128 @@ if user_query:
         st.stop()
 
     final_response_for_chat = ""
-    pipeline_details_md = "### 🔬 Détails du Pipeline RAG:\n\n"
+    pipeline_details_md = "###  Détails du Pipeline RAG:\n\n"
 
-    with st.spinner("Recherche et génération de la réponse..."):
-        # 1. Prétraitement de la requête
-        cleaned_query, detected_intent = preprocess_user_query(
-            raw_query=user_query,
-            detect_intent_flag=True, # Enable intent detection
-            use_llm_for_intent=False, # Use keyword-based for speed/cost, can be made configurable
-            openai_api_key_for_intent=st.session_state.openai_api_key
-        )
-        pipeline_details_md += f"**1. Prétraitement Requête:**\n   - Nettoyée: `{cleaned_query}`\n   - Intention(s): `{detected_intent}`\n\n"
+    # 1. Prétraitement de la requête (OUTSIDE spinner for early guardrail exit)
+    cleaned_query, detected_intent, flags = preprocess_user_query(
+        raw_query=user_query,
+        detect_intent_flag=True, # Enable intent detection
+        openai_api_key_for_intent=st.session_state.openai_api_key,
+        guardrails_enabled=st.session_state.guardrails_enabled
+    )
+    # 2. Afficher un warning simple en cas de guardrail déclenché
+    if "pii_violation" in flags:
+        st.warning("⚠️ Donnée personnelle détectée et anonymisée automatiquement.")
+    elif "unusual_prompt" in flags:
+        st.warning("⚠️ Requête jugée inhabituelle ou suspecte.")
 
-        retrieved_chunks = []
-        if st.session_state.rag_enabled:
-            if st.session_state.faiss_index and st.session_state.faiss_index.ntotal > 0:
-                # 2. Vectorisation de la requête
-                query_embedding = vectorize_query_text(
-                    cleaned_query_text=cleaned_query,
-                    openai_api_key=st.session_state.openai_api_key,
-                    embedding_model=st.session_state.embedding_model
+    # 2. Ajouter les détails dans pipeline_details_md s'il y a des flags (y compris pii)
+    if flags:
+        pipeline_details_md += "**Guardrails d'entrée déclenchés :**\n"
+        for flag in flags:
+            if flag == "pii_violation":
+                pipeline_details_md += "- ⚠️ DetectPII : Donnée personnelle détectée et nettoyée.\n"
+            elif flag == "unusual_prompt":
+                pipeline_details_md += "- ⚠️ UnusualPrompt : Requête jugée inhabituelle ou suspecte.\n"
+            else:
+                pipeline_details_md += f"- {flag}\n"
+        pipeline_details_md += "\n"
+    else:
+        pipeline_details_md += "Aucun guardrail d'entrée déclenché.\n\n"
+
+    # On continue le pipeline normalement
+    pipeline_details_md += f"**1. Prétraitement Requête:**\n   - Nettoyée: `{cleaned_query}`\n   - Intention(s): `{detected_intent}`\n\n"
+
+    
+    retrieved_chunks = []
+    if st.session_state.rag_enabled:
+        with st.spinner("Recherche et génération de la réponse..."):
+            # 2. Vectorisation de la requête
+            query_embedding = vectorize_query_text(
+                cleaned_query_text=cleaned_query,
+                openai_api_key=st.session_state.openai_api_key,
+                embedding_model=st.session_state.embedding_model
+            )
+            pipeline_details_md += f"**2. Vectorisation Requête:** {'Succès' if query_embedding else 'Échec'}\n\n"
+
+            if query_embedding:
+                top_k_retrieval = 3
+                similarity_threshold_val = 0.3  
+                retrieved_chunks = retrieve_top_k_chunks_from_memory(
+                    query_embedding=query_embedding,
+                    faiss_index_in_memory=st.session_state.faiss_index,
+                    chunk_store_in_memory=st.session_state.chunk_store,
+                    top_k=top_k_retrieval,
+                    similarity_threshold=similarity_threshold_val
                 )
-                pipeline_details_md += f"**2. Vectorisation Requête:** {'Succès' if query_embedding else 'Échec'}\n\n"
-
-                if query_embedding:
-                    top_k_retrieval = 3
-                    similarity_threshold_val = 0.3  # Lowered from 0.7 for better recall
-                    retrieved_chunks = retrieve_top_k_chunks_from_memory(
-                        query_embedding=query_embedding,
-                        faiss_index_in_memory=st.session_state.faiss_index,
-                        chunk_store_in_memory=st.session_state.chunk_store,
-                        top_k=top_k_retrieval,
-                        similarity_threshold=similarity_threshold_val
-                    )
-                    pipeline_details_md += f"**3. Récupération Chunks:** {len(retrieved_chunks)} chunk(s) pertinent(s) trouvé(s).\n"
-                    if retrieved_chunks:
-                        for i_rc, rc in enumerate(retrieved_chunks):
-                            pipeline_details_md += (f"   - Chunk {i_rc+1}: Doc='{rc.get('doc_name', 'N/A')}', "
-                                                    f"Score={rc.get('similarity_score', 0.0):.4f}, "
-                                                    f"Texte='{rc['text'][:60]}...'\n")
-                    pipeline_details_md += "\n"
+                pipeline_details_md += f"**3. Récupération Chunks:** {len(retrieved_chunks)} chunk(s) pertinent(s) trouvé(s).\n"
+                if retrieved_chunks:
+                    for i_rc, rc in enumerate(retrieved_chunks):
+                        pipeline_details_md += (f"   - Chunk {i_rc+1}: Doc='{rc.get('doc_name', 'N/A')}', "
+                                                f"Score={rc.get('similarity_score', 0.0):.4f}, "
+                                                f"Texte='{rc['text'][:60]}...'\n")
+                pipeline_details_md += "\n"
             else:
                 pipeline_details_md += "**Mode RAG actif, mais aucun document indexé.** La réponse sera basée sur les connaissances générales du LLM.\n\n"
-        else:
-            pipeline_details_md += "**Mode RAG désactivé.** La réponse sera basée sur les connaissances générales du LLM.\n\n"
-        
-        # 4. Construction du Prompt Augmenté
-        augmented_prompt = build_augmented_prompt(cleaned_query, retrieved_chunks)
-        pipeline_details_md += f"**4. Prompt Augmenté (aperçu):**\n```markdown\n{augmented_prompt[:500]}...\n```\n\n"
 
-        # 5. Génération de la Réponse LLM
-        raw_llm_response = generate_llm_response(
-            prompt=augmented_prompt,
-            openai_api_key=st.session_state.openai_api_key,
-            llm_model="gpt-4o" # Or make this configurable
-        )
-        pipeline_details_md += f"**5. Réponse Brute LLM (aperçu):**\n`{raw_llm_response[:100]}...`\n\n"
+            # 4. Construction du Prompt Augmenté
+            augmented_prompt = build_augmented_prompt(cleaned_query, retrieved_chunks)
+            pipeline_details_md += f"**4. Prompt Augmenté (aperçu):**\n```markdown\n{augmented_prompt[:500]}...\n```\n\n"
 
-        # 6. Post-traitement de la Réponse
-        query_keywords_for_highlight = cleaned_query.split()[:5] # Use first 5 words of cleaned query for highlighting
-        final_response_for_chat, postprocessing_flags = postprocess_llm_response(
-            raw_llm_response=raw_llm_response,
-            retrieved_chunks=retrieved_chunks,
-            query_keywords=query_keywords_for_highlight
-        )
-        pipeline_details_md += f"**6. Post-traitement:**\n   - Indicateurs: `{postprocessing_flags}`\n\n"
-        pipeline_details_md += f"**Réponse Finale Formatée (aperçu):**\n{final_response_for_chat[:100]}...\n"
+            # 5. Génération de la Réponse LLM
+            raw_llm_response = generate_llm_response(
+                prompt=augmented_prompt,
+                openai_api_key=st.session_state.openai_api_key,
+                llm_model="gpt-4o-mini-2024-07-18" 
+            )
+            pipeline_details_md += f"**5. Réponse Brute LLM (aperçu):**\n`{raw_llm_response[:100]}...`\n\n"
+
+            # 6. Post-traitement de la Réponse
+            query_keywords_for_highlight = cleaned_query.split()[:5]
+
+            final_response_for_chat, postprocessing_flags = postprocess_llm_response(
+                raw_llm_response=raw_llm_response,
+                user_query=cleaned_query,
+                query_keywords=query_keywords_for_highlight,
+                faiss_index_path="data/index.faiss",
+                metadata_path="data/chunks_metadata.json",
+                guardrails_enabled=st.session_state.guardrails_enabled
+            )
+
+            # Affichage détaillé de toutes les étapes du post-processing
+            pipeline_details_md += "### Post-traitement & Analyse Qualité\n\n"
+
+            pipeline_details_md += "**Analyse qualité LLM (Heuristique via prompt)**\n"
+            for key in ["is_toxic", "is_uncertain", "has_hallucination", "is_factually_incorrect", "is_answer_acceptable"]:
+                value = postprocessing_flags.get(key)
+                if value is not None:
+                    icon = "✔" if value is False else "⚠️" if value is True else "ℹ️"
+                    pipeline_details_md += f"- `{key}`: {icon} `{value}`\n"
+            pipeline_details_md += "\n"
+
+            # Analyse CoNLI
+            if "conli_detected_hallucination" in postprocessing_flags:
+                if postprocessing_flags["conli_detected_hallucination"]:
+                    pipeline_details_md += "** CoNLI Validator:** Hallucination détectée ⚠️\n"
+                    pipeline_details_md += f"- Correction proposée :\n```markdown\n{postprocessing_flags.get('conli_fix_value', '')}\n```\n"
+                else:
+                    pipeline_details_md += "** CoNLI Validator:** ✅ Aucun problème détecté.\n"
+            pipeline_details_md += "\n"
+
+            # Analyse CoVE
+            if "cove_detected_hallucination" in postprocessing_flags:
+                if postprocessing_flags["cove_detected_hallucination"]:
+                    pipeline_details_md += "** CoVE Validator:** Raisonnement incorrect détecté ⚠️\n"
+                    pipeline_details_md += f"- Correction proposée :\n```markdown\n{postprocessing_flags.get('cove_fix_value', '')}\n```\n"
+                else:
+                    pipeline_details_md += "** CoVE Validator:** ✅ Raisonnement logique correct.\n"
+            pipeline_details_md += "\n"
+
+            # Aperçu de la réponse finale avec mise en forme
+            pipeline_details_md += "**Réponse Finale Formatée (aperçu):**\n"
+            pipeline_details_md += f"```markdown\n{final_response_for_chat[:500]}...\n```\n"
+    else:
+        pipeline_details_md += "**Mode RAG désactivé.** La réponse sera basée sur les connaissances générales du LLM.\n\n"
 
     # Display Assistant's response
     with st.chat_message("assistant", avatar="🤖"):
