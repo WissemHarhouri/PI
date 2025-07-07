@@ -1,16 +1,18 @@
+
 import os
 import logging
-import tiktoken # Assuming tiktoken is used as in your original vect.py
-from openai import OpenAI, APIError, AuthenticationError, RateLimitError
+import tiktoken  # Assuming tiktoken is used as in your original vect.py
 from typing import List
+from sentence_transformers import SentenceTransformer
 
 # --- Constants ---
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small" # Match acq_agent
-MAX_TOKENS_FOR_EMBEDDING = 8191 # OpenAI's limit for text-embedding-ada-002 and 3-small
+DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+MAX_TOKENS_FOR_EMBEDDING = int(os.getenv("MAX_EMBEDDING_TOKENS", 8191)) 
 
 # --- Token Counting and Truncation (from your original vect.py) ---
-def count_tokens(text: str, model_name_for_tiktoken: str = "gpt-3.5-turbo") -> int:
-   
+def count_tokens(text: str, model_name_for_tiktoken: str = None) -> int:
+    if model_name_for_tiktoken is None:
+        model_name_for_tiktoken = os.getenv("TIKTOKEN_MODEL", "cl100k_base")
     try:
         enc = tiktoken.encoding_for_model(model_name_for_tiktoken) 
     except KeyError:
@@ -18,7 +20,9 @@ def count_tokens(text: str, model_name_for_tiktoken: str = "gpt-3.5-turbo") -> i
         enc = tiktoken.get_encoding("cl100k_base")
     return len(enc.encode(text))
 
-def truncate_if_needed(text: str, max_tokens: int = MAX_TOKENS_FOR_EMBEDDING, model_name_for_tiktoken: str = "gpt-3.5-turbo") -> str:
+def truncate_if_needed(text: str, max_tokens: int = MAX_TOKENS_FOR_EMBEDDING, model_name_for_tiktoken: str = None) -> str:
+    if model_name_for_tiktoken is None:
+        model_name_for_tiktoken = os.getenv("TIKTOKEN_MODEL", "cl100k_base")
     try:
         enc = tiktoken.encoding_for_model(model_name_for_tiktoken)
     except KeyError:
@@ -31,38 +35,24 @@ def truncate_if_needed(text: str, max_tokens: int = MAX_TOKENS_FOR_EMBEDDING, mo
         return enc.decode(tokens)
     return text
 
-# --- Embedding Function for Queries (adapted from Streamlit app's get_embedding) ---
-def get_query_embedding(text: str, openai_api_key: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
-    if not openai_api_key:
-        logging.error("[VECTOR] OpenAI API Key not provided for query embedding.")
-        # In Streamlit, you'd use st.error. Here, we log and return None.
-        return None
-    
-    prepared_text = truncate_if_needed(text.replace("\n", " ")) # OpenAI recommends replacing newlines
 
-    try:
-        client = OpenAI(api_key=openai_api_key)
-        response = client.embeddings.create(input=[prepared_text], model=model)
-        embedding = response.data[0].embedding
-        logging.info(f"[VECTOR] Query embedding generated successfully using {model}.")
-        return embedding
-    except AuthenticationError:
-        logging.error("[VECTOR] OpenAI API Key is invalid for query embedding.")
-        return None
-    except RateLimitError:
-        logging.error("[VECTOR] Rate limit exceeded for OpenAI Embeddings API during query embedding.")
-        return None
-    except APIError as e:
-        logging.error(f"[VECTOR] OpenAI API error during query embedding: {e}")
-        return None
-    except Exception as e:
-        logging.error(f"[VECTOR] An unexpected error occurred during query embedding: {str(e)}")
-        return None
+# --- Embedding Function for Queries (local, using sentence-transformers) ---
+_embedding_model_instance = None
+def get_query_embedding(text: str, model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
+    global _embedding_model_instance
+    if _embedding_model_instance is None or getattr(_embedding_model_instance, 'model_name', None) != model:
+        logging.info(f"[VECTOR] Loading embedding model: {model}")
+        _embedding_model_instance = SentenceTransformer(model)
+        _embedding_model_instance.model_name = model
+    prepared_text = truncate_if_needed(text.replace("\n", " "))
+    embedding = _embedding_model_instance.encode([prepared_text])[0]
+    logging.info(f"[VECTOR] Query embedding generated successfully using {model}.")
+    return embedding
 
-# --- Main pipeline for vectorizing a query (combines your logic) ---
-def vectorize_query_text(cleaned_query_text: str, openai_api_key: str, embedding_model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
+# --- Main pipeline for vectorizing a query (local) ---
+def vectorize_query_text(cleaned_query_text: str, embedding_model: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
     if not cleaned_query_text:
         logging.warning("[VECTOR] Empty query text provided for vectorization.")
         return None
     logging.info(f"[VECTOR] Vectorizing query: '{cleaned_query_text[:50]}...'")
-    return get_query_embedding(cleaned_query_text, openai_api_key, model=embedding_model)
+    return get_query_embedding(cleaned_query_text, model=embedding_model)

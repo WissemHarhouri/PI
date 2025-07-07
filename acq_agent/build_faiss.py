@@ -1,4 +1,3 @@
-# acq_agent/build_faiss.py
 import os
 import json
 import uuid
@@ -6,43 +5,50 @@ from datetime import datetime
 import numpy as np
 import faiss
 from langdetect import detect, LangDetectException
-from openai import OpenAI, APIError, AuthenticationError, RateLimitError
-
-# --- File Processing Libs (ensure these are available in your environment) ---
 from PyPDF2 import PdfReader
 from docx import Document
 from bs4 import BeautifulSoup
-from PIL import Image # For OCR
-import easyocr # For OCR
-import requests # For URL fetching
+from PIL import Image
+import easyocr
+import requests
+
+# --- Local Embedding Model (replacing OpenAI) ---
+from sentence_transformers import SentenceTransformer
 
 # --- Constants ---
 EMBEDDING_DIMS = {
-    "text-embedding-3-small": 1536,
-    "text-embedding-ada-002": 1536,
-    "text-embedding-3-large": 3072,
+    os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2"): 384
 }
-DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
+DEFAULT_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
-# --- Global OCR Reader (initialize once) ---
+# --- Global OCR Reader ---
 easyocr_reader_instance = None
-
 def get_easyocr_reader():
     global easyocr_reader_instance
     if easyocr_reader_instance is None:
         try:
-            easyocr_reader_instance = easyocr.Reader(['en', 'fr'], gpu=False) # Add more languages if needed
+            easyocr_reader_instance = easyocr.Reader(['en', 'fr'], gpu=False)
         except Exception as e:
             print(f"Warning: Could not initialize EasyOCR reader: {e}")
-            easyocr_reader_instance = "unavailable" # Mark as unavailable
+            easyocr_reader_instance = "unavailable"
     return easyocr_reader_instance if easyocr_reader_instance != "unavailable" else None
 
-# --- Text Preprocessing and Chunking (from Streamlit app) ---
+# --- Local Embedding Model Instance ---
+_local_embedding_model = SentenceTransformer(DEFAULT_EMBEDDING_MODEL)
+
+def get_document_embedding(text, api_key=None, model=None):
+    try:
+        embedding = _local_embedding_model.encode(text.replace("\n", " "), show_progress_bar=False)
+        return embedding.tolist()
+    except Exception as e:
+        print(f"Local embedding error: {e}")
+        return None
+
 def preprocess_text_for_rag(text):
     import re
     text = re.sub(r'\s+', ' ', text)
     text = text.strip()
-    text = re.sub(r'<[^>]+>', '', text) # Basic HTML tag stripping
+    text = re.sub(r'<[^>]+>', '', text)
     return text
 
 def simple_chunker(text, chunk_size=200, overlap=50):
@@ -60,7 +66,6 @@ def simple_chunker(text, chunk_size=200, overlap=50):
             break
     return [c for c in chunks if c.strip()]
 
-# --- Document Text Extraction ---
 def extract_text_from_pdf_bytes(file_bytes):
     from io import BytesIO
     try:
@@ -84,7 +89,6 @@ def extract_text_from_docx_bytes(file_bytes):
 
 def extract_text_from_html_bytes(file_bytes):
     try:
-        # Assuming file_bytes is actual HTML content, not a path
         soup = BeautifulSoup(file_bytes, "html.parser")
         for script_or_style in soup(["script", "style", "header", "footer", "nav", "aside"]):
             script_or_style.decompose()
@@ -124,33 +128,9 @@ def fetch_and_extract_text_from_url(url):
         print(f"Error fetching/extracting URL '{url}': {e}")
         return None, None
 
-# --- Embedding Function (from Streamlit app, adapted) ---
-def get_document_embedding(text, openai_api_key, model=DEFAULT_EMBEDDING_MODEL):
-    if not openai_api_key:
-        print("Error: OpenAI API Key not provided for embedding.")
-        return None
-    try:
-        client = OpenAI(api_key=openai_api_key)
-        text_to_embed = text.replace("\n", " ") # OpenAI recommendation
-        response = client.embeddings.create(input=[text_to_embed], model=model)
-        return response.data[0].embedding
-    except AuthenticationError:
-        print("Error: OpenAI API Key is invalid.")
-        return None
-    except RateLimitError:
-        print("Error: Rate limit exceeded for OpenAI Embeddings API.")
-        return None
-    except APIError as e:
-        print(f"Error: OpenAI API error during embedding: {e}")
-        return None
-    except Exception as e:
-        print(f"Error: An unexpected error occurred during embedding: {str(e)}")
-        return None
-
-# --- Language Detection (more robust) ---
 def detect_document_language(text_sample):
     try:
-        if text_sample and len(text_sample) > 10: # Need some text to detect
+        if text_sample and len(text_sample) > 10:
             return detect(text_sample)
         return "unknown"
     except LangDetectException:
@@ -159,7 +139,6 @@ def detect_document_language(text_sample):
         print(f"Language detection error: {e}")
         return "unknown"
 
-# --- Core Index Building Logic for Streamlit (In-Memory) ---
 def process_and_index_document_in_memory(
     doc_text_to_process,
     doc_name_for_processing,
@@ -167,22 +146,19 @@ def process_and_index_document_in_memory(
     openai_api_key,
     embedding_model_name,
     chunk_method,
-    # Parameters without defaults now come first after required ones
     current_faiss_index,
     current_chunk_store,
     doc_counter,
-    # Parameters with defaults come last
-    chunk_size_words=150, # if fixed size
-    chunk_overlap_words=20 # if fixed size
+    chunk_size_words=150,
+    chunk_overlap_words=20
 ):
     if not doc_text_to_process or not doc_text_to_process.strip():
         print(f"Warning: No text to process for '{doc_name_for_processing}'.")
-        return current_faiss_index, current_chunk_store, 0 # 0 chunks added
+        return current_faiss_index, current_chunk_store, 0
 
     cleaned_text = preprocess_text_for_rag(doc_text_to_process)
     detected_lang = detect_document_language(cleaned_text[:500])
 
-    new_chunks_text = []
     if chunk_method == "Paragraphe ('\\n\\n')":
         new_chunks_text = [p.strip() for p in cleaned_text.split('\n\n') if p.strip()]
     elif chunk_method == "Taille Fixe (Mots)":
@@ -195,26 +171,24 @@ def process_and_index_document_in_memory(
         print(f"Warning: No chunks generated for '{doc_name_for_processing}'.")
         return current_faiss_index, current_chunk_store, 0
 
-    doc_id = f"doc_{doc_counter}_{str(uuid.uuid4())[:8]}" # Use the passed doc_counter
+    doc_id = f"doc_{doc_counter}_{str(uuid.uuid4())[:8]}"
     doc_chunk_count = 0
     embeddings_for_faiss = []
 
-    # Get embedding dimension
     embedding_dim = EMBEDDING_DIMS.get(embedding_model_name)
     if not embedding_dim:
         print(f"Error: Unknown embedding dimension for model {embedding_model_name}. Using default.")
         embedding_dim = EMBEDDING_DIMS[DEFAULT_EMBEDDING_MODEL]
 
-    # Initialize FAISS index if it's None or dimension mismatch
     if current_faiss_index is None or current_faiss_index.d != embedding_dim:
         print(f"Initializing new FAISS index for dimension {embedding_dim} (model: {embedding_model_name}).")
-        current_faiss_index = faiss.IndexFlatIP(embedding_dim) # Inner Product for cosine similarity with normalized vectors
-        current_chunk_store.clear() # Clear metadata if index changes
+        current_faiss_index = faiss.IndexFlatIP(embedding_dim)
+        current_chunk_store.clear()
 
     for i_chunk, chunk_text in enumerate(new_chunks_text):
         if not chunk_text:
             continue
-        embedding = get_document_embedding(chunk_text, openai_api_key, model=embedding_model_name)
+        embedding = get_document_embedding(chunk_text)
         if embedding:
             embeddings_for_faiss.append(np.array(embedding, dtype='float32'))
             chunk_metadata_item = {
@@ -223,7 +197,7 @@ def process_and_index_document_in_memory(
                 'metadata': {
                     'source_doc_id': doc_id, 'source_doc_name': doc_name_for_processing,
                     'source_type': source_type_for_processing, 'char_length': len(chunk_text),
-                    'word_count': len(chunk_text.split()), 'lang': detected_lang, # Lang of whole doc for now
+                    'word_count': len(chunk_text.split()), 'lang': detected_lang,
                     'created_at': datetime.now().isoformat()
                 }
             }
@@ -238,13 +212,10 @@ def process_and_index_document_in_memory(
             print(f"Successfully added {doc_chunk_count} chunks from '{doc_name_for_processing}' to FAISS. Total in index: {current_faiss_index.ntotal}")
         except Exception as e_faiss:
             print(f"Error adding embeddings to FAISS: {e_faiss}")
-            # Potentially rollback additions to chunk_store for this document if FAISS add fails
-            # For simplicity, not implemented here.
-            return current_faiss_index, current_chunk_store, 0 # Or handle partial success
+            return current_faiss_index, current_chunk_store, 0
 
     return current_faiss_index, current_chunk_store, doc_chunk_count
 
-# --- Functions to save/load FAISS index and metadata to/from files (from your original build_faiss.py) ---
 def save_faiss_index_and_metadata(faiss_index, chunk_store, output_dir="data/"):
     if faiss_index is None or not chunk_store:
         print("Nothing to save: FAISS index or metadata is empty.")

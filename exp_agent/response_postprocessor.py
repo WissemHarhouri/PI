@@ -1,4 +1,3 @@
-
 from dotenv import load_dotenv
 load_dotenv()
 import os
@@ -9,76 +8,19 @@ import faiss
 from typing import List, Dict, Tuple
 
 from guardrails import Guard
-from exp_agent.chunk_retriever import retrieve_top_k_chunks_from_memory
-from exp_agent.embedding import vectorize_query_text
-
 from conli_guard.main import CONLIGuard
 from conli_guard.error import conli_fail, FixInterrupt as ConliFixInterrupt
 from conli_guard.success import conli_success 
-from cove_guard.main import COVEGuard
-from cove_guard.error import cove_fail, FixInterrupt as CoveFixInterrupt
-
-from cove_guard.success import cove_success
 
 # === Définition du LLM callable via LiteLLM ===
 from litellm import completion
-model_name = os.getenv("OPENAI_MODEL") or "gpt-4"
+model_name = os.getenv("MODEL")
+api_key = os.getenv("API_KEY")
 
 def llm(prompt: str) -> str:
-    response = completion(model=model_name, messages=[{"role": "user", "content": prompt}])
+    response = completion(model=model_name, messages=[{"role": "user", "content": prompt}], api_base="https://api.groq.com/openai/v1", api_key=api_key)
     return response["choices"][0]["message"]["content"]
 
-# --- Analyse qualité LLM via prompt
-def analyze_response_with_llm(response: str, llm) -> Dict[str, bool]:
-    import re
-    prompt = f"""
-Tu es un vérificateur de qualité pour des réponses d'assistant IA. Analyse attentivement la réponse suivante :
-
---- Réponse ---
-{response}
---- Fin de réponse ---
-
-Dis-moi si les points suivants sont vrais ou faux. Réponds uniquement en JSON, sans aucun commentaire :
-
-{{
-  \"is_toxic\": true | false,
-  \"is_uncertain\": true | false,
-  \"has_hallucination\": true | false,
-  \"is_factually_incorrect\": true | false,
-  \"is_answer_acceptable\": true | false
-}}
-Exemple de réponse attendue :
-{{"is_toxic": false, "is_uncertain": false, "has_hallucination": false, "is_factually_incorrect": false, "is_answer_acceptable": true}}
-"""
-    try:
-        result = llm(prompt).strip()
-        match = re.search(r'\{.*\}', result, re.DOTALL)
-        if match:
-            json_str = match.group(0)
-            try:
-                parsed = json.loads(json_str)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception as e_json:
-                logging.error(f"[LLM ANALYSIS] LLM returned invalid JSON: {json_str} | Error: {e_json}")
-        else:
-            logging.error(f"[LLM ANALYSIS] LLM did not return JSON. Output: {result}")
-        return {
-            "is_toxic": False,
-            "is_uncertain": False,
-            "has_hallucination": False,
-            "is_factually_incorrect": False,
-            "is_answer_acceptable": True
-        }
-    except Exception as e:
-        logging.error(f"[LLM ANALYSIS] Failed to analyze response: {e}")
-        return {
-            "is_toxic": False,
-            "is_uncertain": False,
-            "has_hallucination": False,
-            "is_factually_incorrect": False,
-            "is_answer_acceptable": True
-        }
 
 # --- Mise en forme Markdown
 def format_response_with_markdown(response: str, keywords: List[str] = None) -> str:
@@ -113,16 +55,15 @@ def append_sources_to_response(response: str, retrieved_chunks: List[Dict]) -> s
 def postprocess_llm_response(
     raw_llm_response: str,
     user_query: str,
-    query_keywords: List[str] = None,
     retrieved_chunks: List[Dict] = None,
-    block_on_toxic_flag: bool = True,
-    llm=llm,
     faiss_index_path: str = "data/index.faiss",
     metadata_path: str = "data/chunks_metadata.json",
     guardrails_enabled: dict = None
 ) -> Tuple[str, Dict[str, any]]:
 
     logging.info(f"[POSTPROCESS] Raw LLM response: '{raw_llm_response[:100]}...'")
+
+    processing_flags = {}  
 
     if retrieved_chunks is None:
         logging.debug("[POSTPROCESS] Aucune liste de chunks fournie, recalcul depuis l'index.")
@@ -140,25 +81,14 @@ def postprocess_llm_response(
         )
         retrieved_chunks = retrieved_chunks_fallback
 
-    # Analyse qualité simple
-    analysis_flags = analyze_response_with_llm(raw_llm_response, llm)
-    processing_flags = dict(analysis_flags)
-
-    if block_on_toxic_flag and analysis_flags.get("is_toxic", False):
-        logging.warning("[POSTPROCESS] Réponse jugée toxique par le LLM — blocage.")
-        final_response_text = "⚠️ La réponse générée a été bloquée car elle a été jugée inappropriée."
-        processing_flags["final_response_blocked_toxic"] = True
-        return final_response_text, processing_flags
 
     if guardrails_enabled is None:
         raise ValueError("guardrails_enabled must be provided (dict from Streamlit UI)")
   
     # Always define context_premise for both guards
     context_premise = " ".join(chunk["text"] for chunk in retrieved_chunks if "text" in chunk and isinstance(chunk["text"], str))
-    
-    
-    
-    # --- CoNLI Validator ---
+
+# --- CoNLI Validator ---
     if guardrails_enabled.get("conli", False):
         conli_guard = Guard().use(CONLIGuard(llm_callable=model_name, on_fail=conli_fail, on_success=conli_success))
         try:
@@ -185,37 +115,19 @@ def postprocess_llm_response(
                 logging.warning(f"  - Chunk {i+1}: Doc = '{chunk.get('doc_name', 'Inconnu')}', Score = {chunk.get('similarity_score', 0.0):.4f}")
                 logging.warning(f"    Texte = '{chunk_text[:150]}...'")
             return e.fix_value, processing_flags
-    
-    
-    
-    
-    
-    # --- CoVE Validator ---
-    if guardrails_enabled.get("cove", False):
-        cove_guard = Guard().use(COVEGuard(llm_callable=model_name, on_fail=cove_fail, on_success=cove_success))
-        try:
-            cove_guard.validate(
-                raw_llm_response,
-                metadata={
-                    "question": user_query,
-                    "samples": context_premise,
-                    "pass_on_invalid": False,
-                    "fail_type": "fix"
-                }
-            )
-            processing_flags["cove_detected_hallucination"] = True
-        except CoveFixInterrupt as e:
-            processing_flags["cove_detected_hallucination"] = True
-            processing_flags["cove_fix_value"] = e.fix_value
-            logging.warning("[POSTPROCESS] === FixInterrupt déclenché (CoVE) ===")
-            logging.warning(f"[POSTPROCESS] Question : {user_query}")
-            logging.warning(f"[POSTPROCESS] Réponse brute du LLM : {raw_llm_response}")
-            logging.warning(f"[POSTPROCESS] Correction CoVE : {e.fix_value}")
-            logging.warning("[POSTPROCESS] Chunks utilisés pour la validation :")
-            for i, chunk in enumerate(retrieved_chunks):
-                chunk_text = chunk.get("text", "").replace("\n", " ")
-                logging.warning(f"  - Chunk {i+1}: Doc = '{chunk.get('doc_name', 'Inconnu')}', Score = {chunk.get('similarity_score', 0.0):.4f}")
-                logging.warning(f"    Texte = '{chunk_text[:150]}...'")
-            return e.fix_value, processing_flags
 
-    return raw_llm_response, processing_flags
+    # Si aucune correction n'a été appliquée, on considère que la réponse est valide
+    processing_flags["conli_detected_hallucination"] = False
+
+    # --- Post-traitement supplémentaire (si nécessaire) ---
+    response_postprocessed = raw_llm_response
+
+    # Ajout des sources si des chunks ont été récupérés
+    if retrieved_chunks and len(retrieved_chunks) > 0:
+        response_postprocessed = append_sources_to_response(response_postprocessed, retrieved_chunks)
+
+    # Mise en forme Markdown avec les mots-clés en gras
+    response_postprocessed = format_response_with_markdown(response_postprocessed, keywords=["TODO", "IMPORTANT", "NOTE"])
+
+    logging.info(f"[POSTPROCESS] Réponse post-traitée : '{response_postprocessed[:100]}...'")
+    return response_postprocessed, processing_flags
