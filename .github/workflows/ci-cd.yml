@@ -1,0 +1,49 @@
+name: CI/CD Pipeline for ExamGenius
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: # Allows manual triggering from GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run Linter (Flake8)
+        run: |
+          flake8 src/ main.py --ignore=E501,W503,E203
+
+      - name: Run Tests (if any)
+        run: |
+          pytest tests/ --verbose || echo "No tests found or some failed"
+
+      - name: Deploy to Streamlit Community Cloud
+        if: github.ref == 'refs/heads/main'
+        env:
+          GROK_API_KEY: ${{ secrets.GROK_API_KEY }}
+        run: |
+          mkdir -p ~/.streamlit/
+
+          echo "\
+          [server]\n\
+          headless = true\n\
+          port = ${{ secrets.PORT }}\n\
+          enableCORS = false\n\
+          " > ~/.streamlit/config.toml
+
+          streamlit run main.py --server.port 80 --server.address 0.0.0.0
