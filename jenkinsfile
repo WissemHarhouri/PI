@@ -1,0 +1,23 @@
+pipeline {
+    agent any
+
+    stages {
+        stage('Build Docker image') {
+            steps {
+                script {
+                    docker.build('asmadr/examgenius:latest')
+                }
+            }
+        }
+
+        stage('Push Docker image') {
+            steps {
+                withDockerRegistry(credentialsId: 'docker-hub-creds', url: '') {
+                    script {
+                        docker.image('asmadr/examgenius:latest').push()
+                    }
+                }
+            }
+        }
+    }
+}
