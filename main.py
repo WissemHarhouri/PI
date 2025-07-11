@@ -18,6 +18,10 @@ from src.parsing.extractor import extract_clos_and_weekly_plan
 from src.generation.exam_generator import generate_exam_from_custom_config
 from src.utils.pdf_generator import create_pdf_from_text
 
+from src.parsing.parse import extract_course_metadata
+
+
+
 
 def compute_clo_weights(topic_weights, topic_to_clos):
     clo_weights = defaultdict(float)
@@ -78,7 +82,8 @@ if uploaded_file:
     with open(temp_path, "wb") as f:
         f.write(uploaded_file.read())
 
-    raw_text = extract_text_from_pdf(temp_path)
+    result_text = extract_text_from_pdf(temp_path)
+    course_metadata = extract_course_metadata(result_text)
     clo_data, weekly_df, merged_df = extract_clos_and_weekly_plan(temp_path)
 
     st.subheader(" Course Learning Outcomes (CLOs)")
@@ -196,12 +201,6 @@ if uploaded_file:
                 for i, clo in enumerate(distributed_clos)
             ]))
 
-            # Difficulty distribution chart
-            if st.session_state.get("question_config"):
-                diff_counts = pd.Series([q["difficulty"] for q in st.session_state.question_config]).value_counts()
-                st.subheader(" Répartition des difficultés des questions")
-                st.bar_chart(diff_counts)
-
             question_types = ["QCM", "QCU", "Rédigée", "Vrai/Faux"]
             question_config = []
             st.subheader(" Définir le type et la difficulté de chaque question")
@@ -211,11 +210,18 @@ if uploaded_file:
                     q_type = st.selectbox(f"Type Q{i+1}", question_types, key=f"type_{i}", index=question_types.index(st.session_state.get(f"type_{i}", "QCM")))
                 with col2:
                     difficulty = st.selectbox(f"Difficulté Q{i+1}", ["easy", "medium", "hard"], key=f"diff_{i}", index=["easy", "medium", "hard"].index(st.session_state.get(f"diff_{i}", "medium")))
+
+                # 🎯 Trouver la description du CLO
+                clo_desc = merged_df[merged_df["CLO#"] == str(clo)]["CLO Description"].values
+                clo_desc = clo_desc[0] if len(clo_desc) > 0 else "N/A"
+
                 question_config.append({
                     "type": q_type,
                     "difficulty": difficulty,
-                    "clo": clo
+                    "clo": clo,
+                    "clo_desc": clo_desc
                 })
+
             st.session_state.question_config = question_config
 
     # Bouton hors formulaire pour générer l'examen
@@ -253,7 +259,17 @@ if uploaded_file:
                             idx += 1
                         sections.append({"title": section_title, "questions": question_dicts})
                 st.code(full_text)
-                pdf_data = create_pdf_from_text("Examen complet", full_text, duration=0, sections=sections)
+                # Get course metadata for PDF
+                course_metadata = extract_course_metadata(temp_path) if 'extract_course_metadata' in globals() else {}
+                teacher = course_metadata.get("instructor", "") if course_metadata else ""
+                duration = course_metadata.get("duration", 0) if course_metadata else 0
+                pdf_data = create_pdf_from_text(
+                    title=exam_title,
+                    teacher=teacher,
+                    duration=duration,
+                    sections=sections,
+                    course_metadata=course_metadata
+                )
                 st.download_button(
                     label=" Télécharger l'examen complet (PDF)",
                     data=pdf_data,
