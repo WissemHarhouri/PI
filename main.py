@@ -47,10 +47,31 @@ def distribute_questions_by_weight(weights_dict, total_questions):
     return distributed
 
 
-st.title("📚 ExamGenius — Generate Exams from Syllabuses")
+    # --- SIDEBAR ---
+st.sidebar.title("ExamGenius Options")
+st.sidebar.markdown("---")
+exam_title = st.sidebar.text_input("Titre de l'examen", value="Examen personnalisé")
+show_help = st.sidebar.checkbox("Afficher l'aide", value=False)
+theme = st.sidebar.radio("Thème", ["Clair", "Sombre"], index=0)
+reset = st.sidebar.button(" Réinitialiser la configuration")
 
-uploaded_file = st.file_uploader("📄 Upload a Syllabus (PDF)", type="pdf")
+if reset:
+    for k in list(st.session_state.keys()):
+        del st.session_state[k]
+    st.rerun()
 
+st.title(f" {exam_title}")
+
+if show_help:
+        st.info("""
+        **Instructions :**
+        1. Téléchargez un syllabus PDF.
+        2. Configurez la répartition des sujets et des questions.
+        3. Personnalisez le type et la difficulté de chaque question.
+        4. Générez et téléchargez l'examen.
+        """)
+
+uploaded_file = st.sidebar.file_uploader("📄 Upload a Syllabus (PDF)", type="pdf")
 if uploaded_file:
     temp_path = "raw_data/uploaded_syllabus.pdf"
     os.makedirs(os.path.dirname(temp_path), exist_ok=True)
@@ -60,37 +81,45 @@ if uploaded_file:
     raw_text = extract_text_from_pdf(temp_path)
     clo_data, weekly_df, merged_df = extract_clos_and_weekly_plan(temp_path)
 
-    st.subheader("🎯 Course Learning Outcomes (CLOs)")
+    st.subheader(" Course Learning Outcomes (CLOs)")
     if not clo_data.empty:
         st.dataframe(clo_data)
     else:
         st.warning("Aucun CLO détecté.")
 
-    st.subheader("📆 Weekly Plan")
+    st.subheader(" Weekly Plan")
     if not weekly_df.empty:
         with st.expander("Afficher le plan hebdomadaire"):
             st.dataframe(weekly_df[["Week", "Topic", "Related CLO#"]])
     else:
         st.warning("Weekly Plan non détecté.")
 
-    st.subheader("🔗 CLOs associés aux sujets hebdomadaires")
+    st.subheader(" CLOs associés aux sujets hebdomadaires")
     if not merged_df.empty:
         st.dataframe(merged_df)
     else:
         st.info("Aucune correspondance CLO-Topic détectée.")
 
-    st.subheader("🧠 Sélection des sujets et configuration des questions")
-
+    st.subheader(" Sélection des sujets et configuration des questions")
+    st.markdown("---")
 
     # --- DEBUG: Show all topics and mapping ---
-    topics = [str(t).strip() for t in weekly_df["Topic"].unique().tolist() if pd.notnull(t)]
+    excluded_topics = [
+        "Applications in Computer Vision",
+        "Final Project Presentation",
+        "Course Feedback and Wrap-Up"
+    ]
+    topics = [
+        str(t).strip() for t in weekly_df["Topic"].unique().tolist()
+        if pd.notnull(t) and str(t).strip() not in excluded_topics
+    ]
 
     # Build topic_to_clos with stripped topic names
     topic_to_clos = {str(topic).strip(): clos for topic, clos in zip(weekly_df["Topic"], weekly_df["Related CLO List"])}
 
     topic_weights = {}
 
-    st.markdown("👉 Sélectionnez les sujets, leur poids (total 100%), et le nombre total de questions.")
+    st.markdown(" Sélectionnez les sujets, leur poids (total 100%), et le nombre total de questions.")
 
     with st.form("exam_config_form"):
         total_percentage = 0
@@ -109,9 +138,8 @@ if uploaded_file:
 
         total_questions = st.number_input("Nombre total de questions", min_value=1, max_value=50, value=10)
 
-        submitted = st.form_submit_button("✅ Valider la sélection")
+        submitted = st.form_submit_button(" Valider la sélection")
         auto_distribute = st.form_submit_button("🔄 Auto-distribuer selon fréquence")
-
 
         if auto_distribute:
             # Use stripped topic names for counting
@@ -135,77 +163,99 @@ if uploaded_file:
             st.success("Poids distribués automatiquement selon fréquence des CLOs.")
             st.dataframe(pd.DataFrame([{"CLO": k, "Weight (%)": round(v, 2)} for k, v in topic_weights.items()]))
 
-    if (submitted or auto_distribute) and topic_weights:
-        if round(sum(topic_weights.values()),2) != 100:
-            st.error(f"❌ Total = {sum(topic_weights.values())}%. Il doit être 100%.")
-        elif not topic_weights:
-            st.warning("⚠️ Aucun sujet sélectionné.")
-        else:
-            st.success("Répartition validée.")
-            st.dataframe(pd.DataFrame([{"CLO": t, "Weight (%)": w} for t, w in topic_weights.items()]))
+        if (submitted or auto_distribute):
+            st.info(f"[DEBUG] total_percentage: {round(sum(topic_weights.values()),2)}%")
+            if not topic_weights:
+                st.warning("⚠️ Aucun sujet sélectionné. Veuillez cocher au moins un sujet.")
+            elif round(sum(topic_weights.values()),2) != 100:
+                st.error(f"❌ Total = {sum(topic_weights.values())}% Il doit être 100%. Modifiez les poids pour atteindre 100%.")
+            else:
+                st.success("Répartition validée.")
+                st.dataframe(pd.DataFrame([{"CLO": t, "Weight (%)": w} for t, w in topic_weights.items()]))
 
-            # Only update distributed_clos and question_config in session_state on submit/auto-distribute
-            distributed_clos = distribute_questions_by_weight(topic_weights, total_questions)
-            st.session_state.distributed_clos = distributed_clos
+                # Only update distributed_clos and question_config in session_state on submit/auto-distribute
+                distributed_clos = distribute_questions_by_weight(topic_weights, total_questions)
+                st.session_state.distributed_clos = distributed_clos
 
-            # Reset question_config and type/diff for new distribution
-            st.session_state.question_config = []
+                # Reset question_config and type/diff for new distribution ONLY if not already set
+                st.session_state.question_config = []
+                question_types = ["QCM", "QCU", "Rédigée", "Vrai/Faux"]
+                for i, clo in enumerate(distributed_clos):
+                    if f"type_{i}" not in st.session_state:
+                        st.session_state[f"type_{i}"] = "QCM"
+                    if f"diff_{i}" not in st.session_state:
+                        st.session_state[f"diff_{i}"] = "medium"
+
+        # Always show the distribution table and question config section if distributed_clos exists in session_state
+        if "distributed_clos" in st.session_state:
+            distributed_clos = st.session_state.distributed_clos
+            st.markdown("---")
+            st.success("Répartition en cours (CLOs distribués pour chaque question):")
+            st.dataframe(pd.DataFrame([
+                {"Question": i+1, "CLO": clo}
+                for i, clo in enumerate(distributed_clos)
+            ]))
+
+            # Difficulty distribution chart
+            if st.session_state.get("question_config"):
+                diff_counts = pd.Series([q["difficulty"] for q in st.session_state.question_config]).value_counts()
+                st.subheader(" Répartition des difficultés des questions")
+                st.bar_chart(diff_counts)
+
             question_types = ["QCM", "QCU", "Rédigée", "Vrai/Faux"]
+            question_config = []
+            st.subheader(" Définir le type et la difficulté de chaque question")
             for i, clo in enumerate(distributed_clos):
-                st.session_state[f"type_{i}"] = "QCM"
-                st.session_state[f"diff_{i}"] = "medium"
-
-    # Always show the distribution table and question config section if distributed_clos exists in session_state
-    if "distributed_clos" in st.session_state:
-        distributed_clos = st.session_state.distributed_clos
-        # Show the distribution table (CLO/weight) for the current distribution
-        st.success("Répartition en cours (CLOs distribués pour chaque question):")
-        st.dataframe(pd.DataFrame([
-            {"Question": i+1, "CLO": clo}
-            for i, clo in enumerate(distributed_clos)
-        ]))
-
-        question_types = ["QCM", "QCU", "Rédigée", "Vrai/Faux"]
-        question_config = []
-        st.subheader("🧩 Définir le type et la difficulté de chaque question")
-        for i, clo in enumerate(distributed_clos):
-            col1, col2 = st.columns(2)
-            with col1:
-                # Use session_state for value and update
-                q_type = st.selectbox(f"Type Q{i+1}", question_types, key=f"type_{i}", index=question_types.index(st.session_state.get(f"type_{i}", "QCM")))
-            with col2:
-                difficulty = st.selectbox(f"Difficulté Q{i+1}", ["easy", "medium", "hard"], key=f"diff_{i}", index=["easy", "medium", "hard"].index(st.session_state.get(f"diff_{i}", "medium")))
-            question_config.append({
-                "type": q_type,
-                "difficulty": difficulty,
-                "clo": clo
-            })
-        st.session_state.question_config = question_config
+                col1, col2 = st.columns(2)
+                with col1:
+                    q_type = st.selectbox(f"Type Q{i+1}", question_types, key=f"type_{i}", index=question_types.index(st.session_state.get(f"type_{i}", "QCM")))
+                with col2:
+                    difficulty = st.selectbox(f"Difficulté Q{i+1}", ["easy", "medium", "hard"], key=f"diff_{i}", index=["easy", "medium", "hard"].index(st.session_state.get(f"diff_{i}", "medium")))
+                question_config.append({
+                    "type": q_type,
+                    "difficulty": difficulty,
+                    "clo": clo
+                })
+            st.session_state.question_config = question_config
 
     # Bouton hors formulaire pour générer l'examen
-    if st.button("📤 Générer l'examen personnalisé"):
-        if "question_config" not in st.session_state or not st.session_state.question_config:
-            st.error("⚠️ Configurez les questions avant de générer l'examen.")
-        else:
-            exam = generate_exam_from_custom_config(st.session_state.question_config, topic_to_clos)
+    if "distributed_clos" in st.session_state:
+        st.markdown("---")
+        if st.button(" Générer l'examen personnalisé"):
+            if "question_config" not in st.session_state or not st.session_state.question_config:
+                st.error("⚠️ Configurez les questions avant de générer l'examen.")
+            else:
+                exam = generate_exam_from_custom_config(st.session_state.question_config, topic_to_clos)
 
-            if exam:
-                st.markdown("### 📄 Aperçu de l'examen complet généré")
-                combined_text = ""
-
+                # Regrouper toutes les questions dans un seul PDF, chaque type dans une section
+                sections = []
+                full_text = ""
+                # On récupère la configuration pour chaque question
+                question_config = st.session_state.question_config if "question_config" in st.session_state else []
+                idx = 0
                 for q_type, questions in exam.items():
                     if questions:
-                        combined_text += f"### {q_type} Questions\n\n"
-                        combined_text += "\n\n".join(questions)
-                        combined_text += "\n\n"
-
-                # Affichage dans Streamlit
-                st.code(combined_text)
-
-                # Génération d’un seul PDF
-                pdf_data = create_pdf_from_text("Exam Complet", combined_text)
+                        section_title = f"{q_type} Questions"
+                        section_text = "\n\n".join(questions)
+                        full_text += f"\n\n=== {section_title} ===\n\n{section_text}\n"
+                        question_dicts = []
+                        for q in questions:
+                            # On utilise la config pour chaque question
+                            if idx < len(question_config):
+                                q_conf = question_config[idx]
+                                question_dicts.append({
+                                    "text": q,
+                                    "type": q_conf.get("type", q_type),
+                                    "difficulty": q_conf.get("difficulty", "medium")
+                                })
+                            else:
+                                question_dicts.append({"text": q, "type": q_type, "difficulty": "medium"})
+                            idx += 1
+                        sections.append({"title": section_title, "questions": question_dicts})
+                st.code(full_text)
+                pdf_data = create_pdf_from_text("Examen complet", full_text, duration=0, sections=sections)
                 st.download_button(
-                    label="📥 Télécharger l'examen complet (PDF)",
+                    label=" Télécharger l'examen complet (PDF)",
                     data=pdf_data,
                     file_name="examen_complet.pdf",
                     mime="application/pdf"
