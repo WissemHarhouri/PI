@@ -1,6 +1,11 @@
-__pycache__
+# Fichiers Python compilés
+__pycache__/
 *.pyc
 
+# Fichiers de config ou de données
 *.json
 *.faiss
 *.log
+
+# Fichier d'environnement contenant des clés sensibles
+.env
