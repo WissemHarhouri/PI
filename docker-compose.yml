@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   examgenius-app:
@@ -7,3 +7,33 @@ services:
       - "8501:8501"
     environment:
       - GROQ_API_KEY=${GROQ_API_KEY}
+    depends_on:
+      - jenkins
+    networks:
+      - app-network
+
+  jenkins:
+    build:
+      context: .
+      dockerfile: jenkins.dockerfile
+    privileged: true
+    user: root
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/workspace
+    environment:
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    networks:
+      - app-network
+
+volumes:
+  jenkins_home:
+    driver: local
+
+networks:
+  app-network:
+    driver: bridge

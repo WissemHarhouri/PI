@@ -1,23 +1,86 @@
 pipeline {
     agent any
 
+    environment {
+        DOCKER_REGISTRY = 'asmadr'
+        IMAGE_NAME = 'examgenius'
+        IMAGE_TAG = 'latest'
+    }
+
     stages {
-        stage('Build Docker image') {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Application') {
             steps {
                 script {
-                    docker.build('asmadr/examgenius:latest')
+                    // Build the main application image
+                    sh 'docker build -t ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} .'
                 }
             }
         }
 
-        stage('Push Docker image') {
+        stage('Test') {
+            steps {
+                script {
+                    // Run basic tests (you can add more comprehensive tests here)
+                    sh 'docker run --rm ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG} python -c "import sys; print(sys.version)"'
+                }
+            }
+        }
+
+        stage('Push to Registry') {
             steps {
                 withDockerRegistry(credentialsId: 'docker-hub-creds', url: '') {
                     script {
-                        docker.image('asmadr/examgenius:latest').push()
+                        sh 'docker push ${DOCKER_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}'
                     }
                 }
             }
+        }
+
+        stage('Deploy with Docker Compose') {
+            steps {
+                script {
+                    // Stop existing containers
+                    sh 'docker-compose down || true'
+                    
+                    // Pull latest images and start services
+                    sh 'docker-compose up -d --build'
+                    
+                    // Wait for services to be healthy
+                    sh 'sleep 30'
+                    
+                    // Check if application is running
+                    sh 'docker-compose ps'
+                }
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                script {
+                    // Basic health check
+                    sh 'curl -f http://localhost:8501 || exit 1'
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Clean up dangling images
+            sh 'docker image prune -f'
+        }
+        failure {
+            // Send notification or rollback
+            echo 'Pipeline failed!'
+        }
+        success {
+            echo 'Pipeline succeeded!'
         }
     }
 }

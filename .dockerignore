@@ -30,3 +30,15 @@ Thumbs.db
 # Archives éventuelles
 *.zip
 *.tar.gz
+
+# Docker deployment files
+dockerfile
+jenkins.dockerfile
+docker-compose.yml
+.dockerignore
+deploy.sh
+setup-jenkins.sh
+DEPLOYMENT.md
+
+# Jenkins workspace
+jenkins_home/
