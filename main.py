@@ -1,12 +1,12 @@
 import streamlit as st
 
+
 # ⚠️ Doit être le tout premier appel Streamlit
 st.set_page_config(page_title="ExamGenius", layout="wide")
-
+import openai
+import os
 from dotenv import load_dotenv
 load_dotenv()
-
-import os
 import sys
 import pandas as pd
 from collections import defaultdict
@@ -20,7 +20,59 @@ from src.utils.pdf_generator import create_pdf_from_text
 
 from src.parsing.parse import extract_course_metadata
 
+import openai
 
+# Optional: mapping for heuristic fallback
+BLOOMS_LEVELS = {
+    "Remember": ["define", "list", "name", "recall", "identify"],
+    "Understand": ["explain", "summarize", "describe", "interpret"],
+    "Apply": ["use", "solve", "demonstrate", "implement"],
+    "Analyze": ["compare", "contrast", "differentiate", "examine"],
+    "Evaluate": ["justify", "critique", "defend", "assess"],
+    "Create": ["design", "construct", "develop", "formulate"]
+}
+
+
+load_dotenv()
+
+import os
+import requests
+from dotenv import load_dotenv
+
+load_dotenv()  # Load GROQ_API_KEY from .env
+
+def classify_bloom_level(question_text):
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        return "❌ GROQ_API_KEY missing"
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "model": "llama3-70b-8192",
+        "messages": [
+            {
+                "role": "user",
+                "content": f"""Given the question: "{question_text}", classify its Bloom's taxonomy level. 
+The possible levels are: Remember, Understand, Apply, Analyze, Evaluate, Create.
+Return ONLY the level."""
+            }
+        ],
+        "temperature": 0
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload)
+        res.raise_for_status()
+        return res.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        print("❌ Groq API error:", e)
+        return "LLM Error"
 
 
 def compute_clo_weights(topic_weights, topic_to_clos):
@@ -263,6 +315,36 @@ if uploaded_file:
                 course_metadata = extract_course_metadata(temp_path) if 'extract_course_metadata' in globals() else {}
                 teacher = course_metadata.get("instructor", "") if course_metadata else ""
                 duration = course_metadata.get("duration", 0) if course_metadata else 0
+
+                # Bloom's Taxonomy Verification
+                st.markdown("---")
+                st.subheader("🌱 Bloom's Taxonomy Verification")
+
+                taxonomy_analysis = []
+                for section in sections:
+                    for q in section["questions"]:
+                        bloom_level = classify_bloom_level(q["text"])
+                        taxonomy_analysis.append({
+                            "Question": q["text"],
+                            "Detected Bloom Level": bloom_level,
+                            "Type": q["type"],
+                            "Difficulty": q["difficulty"]
+                        })
+
+                df_bloom = pd.DataFrame(taxonomy_analysis)
+                st.dataframe(df_bloom)
+
+                # Optional chart for summary
+                try:
+                    import plotly.express as px
+                    bloom_counts = df_bloom["Detected Bloom Level"].value_counts().reset_index()
+                    bloom_counts.columns = ["Bloom Level", "Count"]
+                    fig = px.pie(bloom_counts, names="Bloom Level", values="Count", title="Bloom's Taxonomy Distribution")
+                    st.plotly_chart(fig)
+                except:
+                    st.warning("📊 Plotly not installed, skipping Bloom's chart.")
+
+
                 pdf_data = create_pdf_from_text(
                     title=exam_title,
                     teacher=teacher,
